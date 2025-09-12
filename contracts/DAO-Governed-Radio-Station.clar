@@ -6,6 +6,9 @@
 (define-constant ERR-VOTING-CLOSED (err u105))
 (define-constant ERR-INSUFFICIENT-STAKE (err u106))
 
+(define-constant ERR-INVALID-TIP-AMOUNT (err u107))
+(define-constant ERR-NO-TIPS-TO-WITHDRAW (err u108))
+
 (define-data-var contract-owner principal tx-sender)
 (define-data-var minimum-stake uint u1000000)
 (define-data-var voting-period uint u144)
@@ -160,3 +163,35 @@
       (var-set contract-owner new-owner)
       (ok true))
     ERR-NOT-OWNER))
+
+
+(define-map playlist-tips {playlist-id: uint, creator: principal} uint)
+
+(define-read-only (get-playlist-tips (playlist-id uint) (creator principal))
+  (default-to u0 (map-get? playlist-tips {playlist-id: playlist-id, creator: creator})))
+
+(define-public (tip-playlist (playlist-id uint) (tip-amount uint))
+  (let ((playlist-data (unwrap! (get-playlist playlist-id) ERR-PLAYLIST-NOT-FOUND))
+        (tip-key {playlist-id: playlist-id, creator: (get creator playlist-data)}))
+    (if (not (is-member tx-sender))
+      ERR-NOT-MEMBER
+      (if (not (is-eq (get status playlist-data) "approved"))
+        ERR-PLAYLIST-NOT-FOUND
+        (if (<= tip-amount u0)
+          ERR-INVALID-TIP-AMOUNT
+          (if (< (stx-get-balance tx-sender) tip-amount)
+            ERR-INSUFFICIENT-STAKE
+            (begin
+              (try! (stx-transfer? tip-amount tx-sender (get creator playlist-data)))
+              (map-set playlist-tips tip-key
+                (+ (get-playlist-tips playlist-id (get creator playlist-data)) tip-amount))
+              (ok tip-amount))))))))
+
+(define-public (withdraw-tips (playlist-id uint))
+  (let ((tip-key {playlist-id: playlist-id, creator: tx-sender})
+        (tip-amount (get-playlist-tips playlist-id tx-sender)))
+    (if (<= tip-amount u0)
+      ERR-NO-TIPS-TO-WITHDRAW
+      (begin
+        (map-delete playlist-tips tip-key)
+        (ok tip-amount)))))
