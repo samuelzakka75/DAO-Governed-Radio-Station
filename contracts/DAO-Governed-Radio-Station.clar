@@ -9,6 +9,11 @@
 (define-constant ERR-INVALID-TIP-AMOUNT (err u107))
 (define-constant ERR-NO-TIPS-TO-WITHDRAW (err u108))
 
+
+(define-constant ERR-CANNOT-DELEGATE-TO-SELF (err u109))
+(define-constant ERR-DELEGATE-NOT-MEMBER (err u110))
+(define-constant ERR-NOT-DELEGATED (err u111))
+
 (define-data-var contract-owner principal tx-sender)
 (define-data-var minimum-stake uint u1000000)
 (define-data-var voting-period uint u144)
@@ -195,3 +200,47 @@
       (begin
         (map-delete playlist-tips tip-key)
         (ok tip-amount)))))
+
+
+(define-map delegations principal principal)
+
+(define-read-only (get-delegate (delegator principal))
+  (map-get? delegations delegator))
+
+(define-read-only (has-delegated (delegator principal))
+  (is-some (map-get? delegations delegator)))
+
+(define-public (delegate-vote (delegate principal))
+  (begin
+    (asserts! (is-member tx-sender) ERR-NOT-MEMBER)
+    (asserts! (is-member delegate) ERR-DELEGATE-NOT-MEMBER)
+    (asserts! (not (is-eq tx-sender delegate)) ERR-CANNOT-DELEGATE-TO-SELF)
+    (map-set delegations tx-sender delegate)
+    (ok delegate)))
+
+(define-public (remove-delegation)
+  (begin
+    (asserts! (is-member tx-sender) ERR-NOT-MEMBER)
+    (asserts! (has-delegated tx-sender) ERR-NOT-DELEGATED)
+    (map-delete delegations tx-sender)
+    (ok true)))
+
+(define-public (vote-as-delegate (delegator principal) (playlist-id uint) (vote-for bool))
+  (let 
+    ((playlist-data (unwrap! (get-playlist playlist-id) ERR-PLAYLIST-NOT-FOUND))
+     (current-block stacks-block-height)
+     (vote-key {playlist-id: playlist-id, voter: delegator})
+     (stored-delegate (unwrap! (get-delegate delegator) ERR-NOT-DELEGATED)))
+    (begin
+      (asserts! (is-member tx-sender) ERR-NOT-MEMBER)
+      (asserts! (is-member delegator) ERR-DELEGATE-NOT-MEMBER)
+      (asserts! (is-eq tx-sender stored-delegate) ERR-NOT-DELEGATED)
+      (asserts! (is-none (get-playlist-vote playlist-id delegator)) ERR-ALREADY-VOTED)
+      (asserts! (<= current-block (get voting-ends playlist-data)) ERR-VOTING-CLOSED)
+      (map-set playlist-votes vote-key vote-for)
+      (if vote-for
+        (map-set playlists playlist-id
+          (merge playlist-data {votes-for: (+ (get votes-for playlist-data) u1)}))
+        (map-set playlists playlist-id
+          (merge playlist-data {votes-against: (+ (get votes-against playlist-data) u1)})))
+      (ok true))))
