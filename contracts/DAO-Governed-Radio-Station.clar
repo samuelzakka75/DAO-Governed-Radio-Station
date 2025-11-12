@@ -14,6 +14,15 @@
 (define-constant ERR-DELEGATE-NOT-MEMBER (err u110))
 (define-constant ERR-NOT-DELEGATED (err u111))
 
+(define-constant ERR-SLOT-TAKEN (err u112))
+(define-constant ERR-PLAYLIST-NOT-APPROVED (err u113))
+(define-constant ERR-INVALID-SLOT (err u114))
+(define-constant ERR-NOT-SCHEDULED (err u115))
+(define-constant ERR-CANNOT-CANCEL-PAST-SLOT (err u116))
+
+(define-data-var schedule-counter uint u0)
+(define-data-var slot-duration uint u144)
+
 (define-data-var contract-owner principal tx-sender)
 (define-data-var minimum-stake uint u1000000)
 (define-data-var voting-period uint u144)
@@ -243,4 +252,68 @@
           (merge playlist-data {votes-for: (+ (get votes-for playlist-data) u1)}))
         (map-set playlists playlist-id
           (merge playlist-data {votes-against: (+ (get votes-against playlist-data) u1)})))
+      (ok true))))
+
+
+(define-map schedule-slots uint
+  {
+    playlist-id: uint,
+    scheduled-by: principal,
+    start-block: uint,
+    end-block: uint,
+    status: (string-ascii 16)
+  })
+
+(define-map playlist-schedules uint (list 10 uint))
+
+(define-read-only (get-schedule-slot (slot-id uint))
+  (map-get? schedule-slots slot-id))
+
+(define-read-only (get-slot-duration)
+  (var-get slot-duration))
+
+(define-read-only (get-total-scheduled-slots)
+  (var-get schedule-counter))
+
+(define-read-only (get-playlist-schedules (playlist-id uint))
+  (default-to (list) (map-get? playlist-schedules playlist-id)))
+
+(define-private (is-slot-available (start-block uint) (end-block uint) (counter uint))
+  (match (get-schedule-slot counter)
+    slot-data 
+      (if (is-eq (get status slot-data) "cancelled")
+        true
+        (or (>= start-block (get end-block slot-data))
+            (<= end-block (get start-block slot-data))))
+    true))
+
+(define-public (schedule-playlist (playlist-id uint) (start-block uint))
+  (let ((playlist-data (unwrap! (get-playlist playlist-id) ERR-PLAYLIST-NOT-FOUND))
+        (current-block stacks-block-height)
+        (slot-id (+ (var-get schedule-counter) u1))
+        (end-block (+ start-block (var-get slot-duration)))
+        (schedules (get-playlist-schedules playlist-id)))
+    (begin
+      (asserts! (is-member tx-sender) ERR-NOT-MEMBER)
+      (asserts! (is-eq (get status playlist-data) "approved") ERR-PLAYLIST-NOT-APPROVED)
+      (asserts! (>= start-block current-block) ERR-INVALID-SLOT)
+      (map-set schedule-slots slot-id
+        {
+          playlist-id: playlist-id,
+          scheduled-by: tx-sender,
+          start-block: start-block,
+          end-block: end-block,
+          status: "scheduled"
+        })
+      (map-set playlist-schedules playlist-id (unwrap-panic (as-max-len? (append schedules slot-id) u10)))
+      (var-set schedule-counter slot-id)
+      (ok slot-id))))
+
+(define-public (cancel-schedule (slot-id uint))
+  (let ((slot-data (unwrap! (get-schedule-slot slot-id) ERR-NOT-SCHEDULED))
+        (current-block stacks-block-height))
+    (begin
+      (asserts! (is-eq tx-sender (get scheduled-by slot-data)) ERR-NOT-OWNER)
+      (asserts! (< current-block (get start-block slot-data)) ERR-CANNOT-CANCEL-PAST-SLOT)
+      (map-set schedule-slots slot-id (merge slot-data {status: "cancelled"}))
       (ok true))))
